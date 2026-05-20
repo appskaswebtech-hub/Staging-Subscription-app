@@ -1,0 +1,113 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:dev.sqlite"
+}
+
+// ─── Shopify Default Session (keep as-is) ───────────────────────────────────
+model Session {
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+model SellingPlanGroup {
+  id              String   @id @default(cuid())
+  shop            String
+  shopifyGroupId  String?
+  name            String
+  interval        String
+  intervalCount   Int
+  discount        Float    @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([shop])
+}
+
+model Subscription {
+  id                String   @id @default(cuid())
+  shop              String
+  shopifyContractId String   @unique                // ← was String? — must be unique for upsert
+  customerId        String
+  customerEmail     String
+  productTitle      String
+  planName          String
+  status            String   @default("ACTIVE")
+  price             Float
+  frequency         String
+  nextBillingDate   DateTime
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  billingAttempts   BillingAttempt[]
+
+  @@index([shop])
+  @@index([status])
+}
+
+model BillingAttempt {
+  id             String       @id @default(cuid())
+  subscriptionId String
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id])
+  amount         Float
+  status         String
+  errorMessage   String?
+  createdAt      DateTime     @default(now())
+
+  @@index([subscriptionId])
+}
+
+model AppSettings {
+  id                    String   @id @default(cuid())
+  shop                  String   @unique          // one settings row per shop
+
+  // ── Notifications ──────────────────────────────────────────
+  notifyOnBillingFailure  Boolean  @default(true)
+  notifyOnCancellation    Boolean  @default(true)
+  notifyOnNewSubscription Boolean  @default(false)
+  notificationEmail       String   @default("")   // override email; empty = use shop owner email
+
+  // ── Billing behaviour ──────────────────────────────────────
+  maxBillingRetries     Int      @default(3)      // how many times to retry a failed charge
+  gracePeriodDays       Int      @default(7)      // days before cancelling after repeated failures
+
+  // ── Customer portal ────────────────────────────────────────
+  allowCustomerPause    Boolean  @default(true)   // show Pause button in customer portal
+  allowCustomerCancel   Boolean  @default(true)   // show Cancel button in customer portal
+
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([shop])
+}
+model ShopPlan {
+  id               Int       @id @default(autoincrement())
+  shop             String    @unique
+  plan             String    @default("free")   // "basic" | "pro" | "advanced"
+  subscriptionId   String?                       // Shopify AppSubscription GID
+  status           String    @default("active")  // "active" | "cancelled" | "expired"
+  trialEndsAt      DateTime?
+  billingStartedAt DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([shop])
+}
