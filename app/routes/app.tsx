@@ -327,6 +327,7 @@ export default function App() {
         <Link to="/app" rel="home">Home</Link>
         <Link to="/app/plans">Subscription Plans</Link>
         <Link to="/app/subscriptions">Subscriptions</Link>
+        <Link to="/app/languages">Languages</Link>
         <Link to="/app/customers">Customers</Link>
         <Link to="/app/settings">Settings</Link>
         <Link to="/app/billing">Upgrade Plans</Link>

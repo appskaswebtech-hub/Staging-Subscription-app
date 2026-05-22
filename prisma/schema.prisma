@@ -111,3 +111,14 @@ model ShopPlan {
 
   @@index([shop])
 }
+
+model Translation {
+  id        String   @id @default(cuid())
+  shop      String
+  locale    String
+  keys      Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([shop, locale])
+}
