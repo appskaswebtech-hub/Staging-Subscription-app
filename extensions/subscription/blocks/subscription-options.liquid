@@ -13,9 +13,14 @@
   }
 </style>
 
-<div class="sub-widget" id="sub-widget-{{ block.id }}">
-
-  <p class="sub-widget__label">Purchase Options</p>
+<div
+  class="sub-widget"
+  id="sub-widget-{{ block.id }}"
+  data-shop="{{ shop.permanent_domain | default: shop.domain }}"
+  data-translations-url="/apps/subscriptions/translations?shop={{ shop.permanent_domain | default: shop.domain | url_encode }}"
+  data-app-url="{{ block.settings.app_url | default: 'https://lines-oxford-record-acne.trycloudflare.com' | strip }}"
+>
+  <p class="sub-widget__label" data-i18n="purchase_options">Purchase Options</p>
 
   <div class="sub-widget__options" role="radiogroup" aria-label="Purchase options">
 
@@ -32,8 +37,11 @@
       <span class="sub-option__inner">
         <span class="sub-option__left">
           <span class="sub-option__dot"></span>
-          <span class="sub-option__title">One-time purchase</span>
+          <span class="sub-option__title" data-i18n="one_time">One-time purchase</span>
         </span>
+        
+        {% comment %} <span class="sub-option__badge" data-i18n="save_label">SAVE {{ discount_pct }}%</span> {% endcomment %}
+
         <span class="sub-option__price" data-base-price="{{ product.selected_or_first_available_variant.price }}">
           {{ product.selected_or_first_available_variant.price | money }}
         </span>
@@ -78,9 +86,16 @@
             <span class="sub-option__left">
               <span class="sub-option__dot"></span>
               <span class="sub-option__title">
-                {{ group.name }}
+                <span
+                  class="sub-option__group-name"
+                  data-i18n="selling_plan_group__{{ group.name | handleize }}"
+                >{{ group.name }}</span>
                 {%- if discount_pct > 0 -%}
-                  <span class="sub-option__badge">SAVE {{ discount_pct }}%</span>
+                  <span
+                    class="sub-option__badge"
+                    data-i18n="save_label"
+                    data-i18n-suffix=" {{ discount_pct }}%"
+                  >SAVE {{ discount_pct }}%</span>
                 {%- endif -%}
               </span>
             </span>
@@ -122,6 +137,13 @@
       "id": "show_savings",
       "label": "Show savings callout",
       "default": true
+    },
+    {
+      "type": "text",
+      "id": "app_url",
+      "label": "App URL fallback",
+      "info": "Optional. Use your app URL if app proxy translations return 404. Example: https://your-app-domain.com",
+      "default": "https://lines-oxford-record-acne.trycloudflare.com"
     }
   ]
 }

@@ -2,7 +2,15 @@ import { json, redirect } from "@remix-run/node";
 import { Form, useLoaderData, useNavigation } from "@remix-run/react";
 import { useState, useCallback, useRef } from "react";
 import type { LoaderArgs, ActionArgs } from "@remix-run/node";
-import { getTranslationsForShop, upsertTranslation } from "../models/translations.server";
+import { authenticate } from "../shopify.server";
+import {
+  getShopDefaultLocale,
+  getTranslationsForShop,
+  setShopDefaultLocale,
+  upsertTranslation,
+} from "../models/translations.server";
+
+const DEFAULT_LANGUAGE_LOCALE = "en";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -12,7 +20,9 @@ type SectionKey =
   | "subscribe_now_button"
   | "recurring_invoices_widget"
   | "recurring_invoices_cart_labels"
-  | "interval_labels";
+  | "interval_labels"
+  | "customer_portal"
+  | "customer_subscription_detail";
 
 interface TranslationSection {
   key: SectionKey;
@@ -31,7 +41,9 @@ const SECTIONS: TranslationSection[] = [
     icon: "🔄",
     description: "These values are used in auto-charging and recurring invoices widgets.",
     fields: [
+      { key: "purchase_options_label", label: "Purchase options label", defaultEnglish: "Purchase Options" },
       { key: "one_time_label",        label: "One time option label",        defaultEnglish: "One-time purchase" },
+      { key: "save_label",            label: "Savings badge label",          defaultEnglish: "Save" },
       { key: "one_time_description",  label: "One time option description",  defaultEnglish: "Buy once, no commitment.", multiline: true },
       { key: "subscribe_label",       label: "Subscribe option label",       defaultEnglish: "Subscribe" },
       { key: "subscribe_description", label: "Subscribe option description", defaultEnglish: "Subscribe and save on every order.", multiline: true },
@@ -91,9 +103,78 @@ const SECTIONS: TranslationSection[] = [
       { key: "yearly",  label: "Yearly",  defaultEnglish: "Yearly" },
     ],
   },
+  {
+    key: "customer_portal",
+    label: "Customer portal",
+    icon: "👤",
+    description: "Texts used in the customer subscriptions dashboard and inline actions.",
+    fields: [
+      { key: "my_subscriptions",             label: "Page heading",                     defaultEnglish: "My Subscriptions" },
+      { key: "profile_block_description",    label: "Profile block description",        defaultEnglish: "View your active subscriptions and manage them." },
+      { key: "subscriptions_button",         label: "Profile block button",             defaultEnglish: "Subscriptions" },
+      { key: "no_active_subs",               label: "Empty state message",              defaultEnglish: "You have no active subscriptions." },
+      { key: "loading_payment_history",      label: "Loading payment history",          defaultEnglish: "Loading payment history…" },
+      { key: "could_not_load_payment_history", label: "Payment history error prefix",   defaultEnglish: "Could not load payment history:" },
+      { key: "no_payment_attempts",          label: "No payment attempts message",      defaultEnglish: "No payment attempts recorded yet." },
+      { key: "error_could_not_get_app_info", label: "App info error",                   defaultEnglish: "Error: Could not get app info." },
+      { key: "error_prefix",                 label: "Generic error prefix",             defaultEnglish: "Error: " },
+      { key: "paused_success",               label: "Pause success message",            defaultEnglish: "Paused successfully." },
+      { key: "resumed",                      label: "Resume success message",           defaultEnglish: "Resumed." },
+      { key: "cancelled",                    label: "Cancel success message",           defaultEnglish: "Cancelled." },
+      { key: "done",                         label: "Generic success message",          defaultEnglish: "Done." },
+      { key: "failed_prefix",                label: "Failure prefix",                   defaultEnglish: "Failed: " },
+      { key: "qty_label",                    label: "Quantity label",                   defaultEnglish: "Qty" },
+      { key: "subscription_heading",         label: "Subscription card heading",        defaultEnglish: "Subscription" },
+      { key: "next_billing_label",           label: "Next billing label",               defaultEnglish: "Next billing:" },
+      { key: "subscription_is_paused",       label: "Paused status helper text",        defaultEnglish: "Subscription is paused" },
+      { key: "total_value",                  label: "Total value label",                defaultEnglish: "Total value" },
+      { key: "pause",                        label: "Pause button",                     defaultEnglish: "Pause" },
+      { key: "resume",                       label: "Resume button",                    defaultEnglish: "Resume" },
+      { key: "cancel_subscription",          label: "Cancel subscription button",       defaultEnglish: "Cancel Subscription" },
+      { key: "hide_payment_history",         label: "Hide payment history button",      defaultEnglish: "Hide payment history" },
+      { key: "view_payment_history",         label: "View payment history button",      defaultEnglish: "View payment history" },
+      { key: "payment_history",              label: "Payment history heading",          defaultEnglish: "Payment History" },
+      { key: "status_active",                label: "Status: Active",                   defaultEnglish: "Active" },
+      { key: "status_paused",                label: "Status: Paused",                   defaultEnglish: "Paused" },
+      { key: "status_cancelled",             label: "Status: Cancelled",                defaultEnglish: "Cancelled" },
+      { key: "status_failed",                label: "Status: Failed",                   defaultEnglish: "Failed" },
+      { key: "status_expired",               label: "Status: Expired",                  defaultEnglish: "Expired" },
+    ],
+  },
+  {
+    key: "customer_subscription_detail",
+    label: "Subscription detail",
+    icon: "🧾",
+    description: "Texts used on the customer subscription detail page.",
+    fields: [
+      { key: "subscription_details",        label: "Detail page heading",               defaultEnglish: "Subscription Details" },
+      { key: "loading_subscription",        label: "Loading subscription",              defaultEnglish: "Loading subscription…" },
+      { key: "something_went_wrong",        label: "Generic detail page error",         defaultEnglish: "Something went wrong." },
+      { key: "subscription_not_found",      label: "Subscription not found message",    defaultEnglish: "Subscription not found." },
+      { key: "back_to_subscriptions",       label: "Back button label",                 defaultEnglish: "Back to Subscriptions" },
+      { key: "all_subscriptions",           label: "All subscriptions link",            defaultEnglish: "All Subscriptions" },
+      { key: "overview",                    label: "Overview section heading",           defaultEnglish: "Overview" },
+      { key: "status_label",                label: "Status label",                      defaultEnglish: "Status" },
+      { key: "subscription_id_label",       label: "Subscription ID label",             defaultEnglish: "Subscription ID" },
+      { key: "started_label",               label: "Started label",                     defaultEnglish: "Started" },
+      { key: "next_billing_detail_label",   label: "Next billing detail label",         defaultEnglish: "Next Billing" },
+      { key: "items",                       label: "Items section heading",             defaultEnglish: "Items" },
+      { key: "per_charge_suffix",           label: "Per charge suffix",                 defaultEnglish: "/ charge" },
+      { key: "total_per_billing_cycle",     label: "Total per billing cycle",           defaultEnglish: "Total per billing cycle" },
+      { key: "manage_subscription",         label: "Manage subscription heading",       defaultEnglish: "Manage Subscription" },
+      { key: "paused_notice",               label: "Paused notice",                     defaultEnglish: "Your subscription is paused. No charges will be made until you resume it.", multiline: true },
+      { key: "pause_subscription",          label: "Pause subscription button",         defaultEnglish: "Pause Subscription" },
+      { key: "resume_subscription",         label: "Resume subscription button",        defaultEnglish: "Resume Subscription" },
+      { key: "cancel_disclaimer",           label: "Cancellation disclaimer",           defaultEnglish: "Cancelling your subscription will stop all future charges. This action cannot be undone.", multiline: true },
+      { key: "subscription_status_heading", label: "Subscription status heading",       defaultEnglish: "Subscription Status" },
+      { key: "subscription_has_been",       label: "Subscription has been prefix",      defaultEnglish: "This subscription has been" },
+      { key: "no_further_charges",          label: "No further charges helper",         defaultEnglish: "No further charges will be made." },
+    ],
+  },
 ];
 
 const LANGUAGES = [
+  { value: "en",    label: "English" },
   { value: "zh-CN", label: "Chinese (Simplified)" },
   { value: "zh-TW", label: "Chinese (Traditional)" },
   { value: "fr",    label: "French" },
@@ -114,19 +195,22 @@ const LANGUAGES = [
 // ─── Loader ──────────────────────────────────────────────────────────────────
 
 export async function loader({ request }: LoaderArgs) {
-  const url    = new URL(request.url);
-  const shop   = url.searchParams.get("shop")   || "dev-shop.myshopify.com";
-  const locale = url.searchParams.get("locale") || "zh-CN";
+  const { session } = await authenticate.admin(request);
+  const url = new URL(request.url);
+  const shop = session.shop;
   const translations = await getTranslationsForShop(shop);
+  const defaultLocale = await getShopDefaultLocale(shop);
+  const locale = url.searchParams.get("locale") || defaultLocale || DEFAULT_LANGUAGE_LOCALE;
   return json({ shop, locale, translations });
 }
 
 // ─── Action ──────────────────────────────────────────────────────────────────
 
 export async function action({ request }: ActionArgs) {
-  const form   = await request.formData();
-  const shop   = String(form.get("shop")   || "dev-shop.myshopify.com");
-  const locale = String(form.get("locale") || "zh-CN");
+  const { session } = await authenticate.admin(request);
+  const form = await request.formData();
+  const shop = session.shop;
+  const locale = String(form.get("locale") || DEFAULT_LANGUAGE_LOCALE);
 
   const keys: Record<string, string> = {};
   for (const [k, v] of form.entries()) {
@@ -135,10 +219,13 @@ export async function action({ request }: ActionArgs) {
     }
   }
 
-  await upsertTranslation(shop, locale, keys);
+  await Promise.all([
+    upsertTranslation(shop, locale, keys),
+    setShopDefaultLocale(shop, locale),
+  ]);
 
   return redirect(
-    `/app/languages?shop=${encodeURIComponent(shop)}&locale=${encodeURIComponent(locale)}`
+    `/app/languages?locale=${encodeURIComponent(locale)}`
   );
 }
 
@@ -166,13 +253,17 @@ async function autoTranslate(
 
 // ─── Build empty field map for a locale ──────────────────────────────────────
 
-function buildFieldMap(keys: Record<string, string>): Record<string, string> {
+function buildFieldMap(
+  keys: Record<string, string>,
+  locale: string = DEFAULT_LANGUAGE_LOCALE,
+): Record<string, string> {
+  const isEnglish = locale.toLowerCase().startsWith("en");
   const map: Record<string, string> = {};
   SECTIONS.forEach((section) => {
     section.fields.forEach((f) => {
       const compositeKey = `${section.key}__${f.key}`;
       // DB stores keys as "subscription_widget__one_time_label" — match exactly
-      map[compositeKey] = keys[compositeKey] ?? "";
+      map[compositeKey] = keys[compositeKey] ?? (isEnglish ? f.defaultEnglish : "");
     });
   });
   return map;
@@ -190,7 +281,7 @@ export default function LanguagesAdmin() {
   const localeCache = useRef<Record<string, Record<string, string>>>({});
   // populate cache from loader translations immediately (safe on first render)
   (translations as any[]).forEach((t: any) => {
-    localeCache.current[t.locale] = buildFieldMap(t.keys ?? {});
+    localeCache.current[t.locale] = buildFieldMap(t.keys ?? {}, t.locale);
   });
 
   const [selectedLocale,  setSelectedLocale]  = useState(initialLocale);
@@ -200,7 +291,7 @@ export default function LanguagesAdmin() {
 
   // Current field values come from the cache for the selected locale
   const [fieldValues, setFieldValues] = useState<Record<string, string>>(
-    () => localeCache.current[initialLocale] ?? buildFieldMap({})
+    () => localeCache.current[initialLocale] ?? buildFieldMap({}, initialLocale)
   );
 
   const currentSection = SECTIONS.find((s) => s.key === activeSection)!;
@@ -228,6 +319,13 @@ export default function LanguagesAdmin() {
         Object.values(localeCache.current[newLocale]).some((v) => v !== "")
       ) {
         setFieldValues(localeCache.current[newLocale]);
+        return;
+      }
+
+      if (newLocale.toLowerCase().startsWith("en")) {
+        const englishDefaults = buildFieldMap({}, newLocale);
+        localeCache.current[newLocale] = englishDefaults;
+        setFieldValues(englishDefaults);
         return;
       }
 

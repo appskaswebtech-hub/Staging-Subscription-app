@@ -2,6 +2,7 @@
 
 import { json } from "@remix-run/node";
 import prisma from "../db.server";
+import { normalizeShop } from "../models/translations.server";
 
 function corsHeaders() {
   return {
@@ -36,7 +37,10 @@ export async function action({ request }) {
     return json({ error: "Invalid JSON body" }, { status: 400, headers: corsHeaders() });
   }
 
-  const { contractId, intent, shop } = body;
+  const url = new URL(request.url);
+  const contractId = body.contractId;
+  const intent = body.intent;
+  const shop = normalizeShop(body.shop || url.searchParams.get("shop"));
 
   if (!contractId || !intent || !shop) {
     return json(
@@ -86,7 +90,6 @@ export async function action({ request }) {
     cancel: "subscriptionContractCancel",
   };
   console.log("[action] Received intent:", intent, "for contractId:", contractId, "shop:", shop);
-  console.log("[action] Using GID:", session.accessToken);
   // ── Call Shopify Admin API ────────────────────────────────────
   let newStatus;
   try {
@@ -105,8 +108,6 @@ export async function action({ request }) {
     const data   = await apiRes.json();
     console.log("[action] Shopify response:", JSON.stringify(data));
     const result = data?.data?.[KEYS[intent]];
-
-    console.log("[action] Shopify response:", JSON.stringify(data));
 
     if (!result) {
       return json(

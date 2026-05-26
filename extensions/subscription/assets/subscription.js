@@ -363,3 +363,128 @@
   }
 
 })();
+
+// ── Localization ─────────────────────────────────────────────
+(function () {
+  const STORAGE_KEY = 'sub_locale';
+  const OVERRIDE_KEY = 'sub_locale_override';
+
+  function normalizeShopHost(value) {
+    if (!value) return window.location.hostname;
+
+    try {
+      const url = new URL(value.startsWith('http') ? value : `https://${value}`);
+      return url.hostname;
+    } catch (e) {
+      return String(value).replace(/^https?:\/\//i, '').split('/')[0];
+    }
+  }
+
+  function normalizeAppUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    return raw.replace(/\/+$/, '');
+  }
+
+  function getLocaleOverride() {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const fromQuery = params.get('sub_locale');
+      if (fromQuery) {
+        localStorage.setItem(OVERRIDE_KEY, fromQuery);
+        return fromQuery;
+      }
+
+      return localStorage.getItem(OVERRIDE_KEY) || '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  async function fetchTranslations(widget) {
+    try {
+      const shopHost = normalizeShopHost(widget?.dataset.shop || window.location.hostname);
+      const localeOverride = getLocaleOverride();
+      const proxyUrl = new URL(
+        widget?.dataset.translationsUrl
+          || `/apps/subscriptions/translations?shop=${encodeURIComponent(shopHost)}`,
+        window.location.origin,
+      );
+
+      if (localeOverride) {
+        proxyUrl.searchParams.set('locale', localeOverride);
+      }
+
+      let res = await fetch(proxyUrl.toString(), { credentials: 'same-origin' });
+      if (res.ok) {
+        return await res.json();
+      }
+
+      console.warn(`[KAS] translations fetch failed: ${res.status} ${res.statusText} (${proxyUrl.toString()})`);
+
+      const appUrl = normalizeAppUrl(widget?.dataset.appUrl);
+      if (!appUrl) return {};
+
+      const directUrl = new URL(`${appUrl}/api/translations`);
+      directUrl.searchParams.set('shop', shopHost);
+      if (localeOverride) {
+        directUrl.searchParams.set('locale', localeOverride);
+      }
+
+      res = await fetch(directUrl.toString(), { credentials: 'omit' });
+      if (!res.ok) {
+        console.warn(`[KAS] direct translations fetch failed: ${res.status} ${res.statusText} (${directUrl.toString()})`);
+        return {};
+      }
+
+      return await res.json();
+    } catch (e) { console.warn(e); return {}; }
+  }
+
+  function applyTranslations(dict, root = document) {
+    root.querySelectorAll('[data-i18n]').forEach((el) => {
+      const key = el.getAttribute('data-i18n');
+      if (!key) return;
+  
+      // lookup helper: try several variants to handle admin/frontend naming differences
+      function lookup(k) {
+        if (!k) return null;
+        if (dict[k]) return dict[k];
+        // try common suffixes
+        const variants = [
+          k,
+          `${k}_label`,
+          `${k}_text`,
+          k.replace(/\./g, '_'),
+          `${k.replace(/\./g, '_')}_label`,
+        ];
+        for (const v of variants) {
+          if (dict[v]) return dict[v];
+        }
+        // try namespaced keys from sections (e.g. subscription_widget.one_time_label)
+        const namespacedCandidates = Object.keys(dict).filter(dk => dk.endsWith(k) || dk.endsWith(k + '_label'));
+        if (namespacedCandidates.length) return dict[namespacedCandidates[0]];
+        return null;
+      }
+
+      const txt = lookup(key);
+      if (txt) {
+        const suffix = el.dataset.i18nSuffix || '';
+        el.textContent = `${txt}${suffix}`;
+      }
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', async () => {
+    document.querySelectorAll('.sub-widget').forEach(async (widget) => {
+      const payload = await fetchTranslations(widget);
+      if (payload.effectiveLocale) {
+        localStorage.setItem(STORAGE_KEY, payload.effectiveLocale);
+      }
+      console.log('[KAS] translation payload locale:', payload.effectiveLocale || payload.preferredLocale || 'none');
+      applyTranslations(payload.translation || {}, widget);
+    });
+  });
+})();
+
+  

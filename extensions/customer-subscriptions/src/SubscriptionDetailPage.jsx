@@ -7,6 +7,8 @@
 import "@shopify/ui-extensions/preact";
 import { render, useState, useEffect } from "preact/compat";
 
+const STORAGE_KEY = "sub_locale";
+
 // ─── GraphQL — fetch one subscription by ID from URL ─────────────
 // Customer Account API passes the page path; we read the contract ID
 // from `shopify.customerAccount.pageUrl` or route params.
@@ -42,6 +44,16 @@ const SUBSCRIPTION_QUERY = `
 
 const GQL_ENDPOINT = "shopify://customer-account/api/2026-04/graphql.json";
 
+function tr(key) {
+  if (typeof window === "undefined") return null;
+  return (window.__sub_translations && window.__sub_translations[key]) || null;
+}
+
+function t(key, fallback) {
+  var value = tr(key);
+  return value === null || value === undefined || value === "" ? fallback : value;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────
 function norm(s) {
   return s ? s.toString().toUpperCase().trim() : "UNKNOWN";
@@ -49,14 +61,16 @@ function norm(s) {
 
 function fmtDate(d) {
   if (!d) return "—";
-  return new Date(d).toLocaleDateString(undefined, {
+  var locale = typeof window !== "undefined" ? window.__sub_locale || undefined : undefined;
+  return new Date(d).toLocaleDateString(locale, {
     year: "numeric", month: "short", day: "numeric",
   });
 }
 
 function fmtDateTime(d) {
   if (!d) return "—";
-  return new Date(d).toLocaleString(undefined, {
+  var locale = typeof window !== "undefined" ? window.__sub_locale || undefined : undefined;
+  return new Date(d).toLocaleString(locale, {
     year: "numeric", month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit",
   });
@@ -75,10 +89,13 @@ function statusTone(s) {
 function statusLabel(s) {
   var st = norm(s);
   var map = {
-    ACTIVE: "Active", PAUSED: "Paused", CANCELLED: "Cancelled",
-    FAILED: "Failed", EXPIRED: "Expired",
+    ACTIVE: t("status_active", "Active"),
+    PAUSED: t("status_paused", "Paused"),
+    CANCELLED: t("status_cancelled", "Cancelled"),
+    FAILED: t("status_failed", "Failed"),
+    EXPIRED: t("status_expired", "Expired"),
   };
-  return map[st] || s;
+  return map[st] || (s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : "");
 }
 
 function attemptTone(s) {
@@ -87,6 +104,46 @@ function attemptTone(s) {
   if (st === "FAILED")   return "critical";
   if (st === "PENDING")  return "warning";
   return "info";
+}
+
+async function getShopHost() {
+  try {
+    if (shopify && shopify.shop && shopify.shop.myshopifyDomain) {
+      return shopify.shop.myshopifyDomain;
+    }
+  } catch (e) {}
+
+  try {
+    var token = await shopify.sessionToken.get();
+    var payload = JSON.parse(atob(token.split(".")[1]));
+    return new URL(payload.dest).hostname;
+  } catch (e) {
+    console.error("getShopHost error:", e);
+    return null;
+  }
+}
+
+async function loadTranslations(shopHost) {
+  if (!shopHost) return false;
+
+  try {
+    var res = await fetch("https://" + shopHost + "/apps/subscriptions/translations");
+    if (!res.ok) throw new Error("locale not found");
+
+    var data = await res.json();
+    if (typeof window !== "undefined") {
+      window.__sub_translations = data.translation || {};
+      window.__sub_locale = data.effectiveLocale || data.preferredLocale || "en";
+      localStorage.setItem(STORAGE_KEY, window.__sub_locale);
+    }
+    return true;
+  } catch (e) {
+    if (typeof window !== "undefined") {
+      window.__sub_translations = {};
+      window.__sub_locale = localStorage.getItem(STORAGE_KEY) || "en";
+    }
+    return false;
+  }
 }
 
 // ─── Get contract ID from current URL ────────────────────────────
@@ -145,6 +202,7 @@ function SubscriptionDetailPage() {
   var msgArr      = useState("");
   var loadingActArr = useState(null);
   var actionMsgArr  = useState("");
+  var localeReadyArr = useState(false);
 
   var getState      = stateArr[0];      var setState      = stateArr[1];
   var getSub        = subArr[0];        var setSub        = subArr[1];
@@ -152,6 +210,18 @@ function SubscriptionDetailPage() {
   var getMsg        = msgArr[0];        var setMsg        = msgArr[1];
   var getLoadingAct = loadingActArr[0]; var setLoadingAct = loadingActArr[1];
   var getActionMsg  = actionMsgArr[0];  var setActionMsg  = actionMsgArr[1];
+  var localeReady   = localeReadyArr[0]; var setLocaleReady = localeReadyArr[1];
+
+  useEffect(function() {
+    getShopHost()
+      .then(function(shopHost) {
+        if (!shopHost) return false;
+        return loadTranslations(shopHost);
+      })
+      .finally(function() {
+        setLocaleReady(true);
+      });
+  }, [setLocaleReady]);
 
   // ── Load subscription data ──────────────────────────────────────
   useEffect(function () {
@@ -233,11 +303,15 @@ function SubscriptionDetailPage() {
         setSub(shaped);
 
         // ── Fetch billing attempts from our app proxy ──────────────
-        var shop = shopify.shop.myshopifyDomain;
-        return fetch(
-          "https://" + shop + "/apps/subscriptions/billing-history?contractId=" + shaped.id,
-          { headers: { "Content-Type": "application/json" } }
-        )
+        return getShopHost()
+          .then(function(shopHost) {
+            if (!shopHost) throw new Error("missing shop");
+
+            return fetch(
+              "https://" + shopHost + "/apps/subscriptions/billing-history?contractId=" + shaped.id,
+              { headers: { "Content-Type": "application/json" } }
+            );
+          })
           .then(function (r) { return r.json(); })
           .then(function (data) {
             if (data.attempts) {
@@ -254,15 +328,20 @@ function SubscriptionDetailPage() {
         setMsg(err && err.message ? err.message : "fetch failed");
         setState("error");
       });
-  }, []);
+  }, [setAttempts, setMsg, setState, setSub]);
 
   // ── Action handler (pause / resume / cancel) ───────────────────
-  function doAction(intent) {
+  async function doAction(intent) {
     if (!getSub) return;
     setLoadingAct(intent);
     setActionMsg("");
 
-    var shop = shopify.shop.myshopifyDomain;
+    var shop = await getShopHost();
+    if (!shop) {
+      setLoadingAct(null);
+      setActionMsg(t("error_could_not_get_app_info", "Error: Could not get app info."));
+      return;
+    }
 
     fetch("https://" + shop + "/apps/subscriptions/action", {
       method: "POST",
@@ -271,39 +350,40 @@ function SubscriptionDetailPage() {
         contractId: getSub.gid,
         customerId: getSub.customerId,
         intent: intent,
+        shop: shop,
       }),
     })
       .then(function (res) { return res.json(); })
       .then(function (data) {
         setLoadingAct(null);
         if (data.error) {
-          setActionMsg("Error: " + data.error);
+          setActionMsg(t("error_prefix", "Error: ") + data.error);
           return;
         }
         var labels = {
-          pause: "Subscription paused successfully.",
-          resume: "Subscription resumed.",
-          cancel: "Subscription cancelled.",
+          pause: t("paused_success", "Paused successfully."),
+          resume: t("resumed", "Resumed."),
+          cancel: t("cancelled", "Cancelled."),
         };
-        setActionMsg(labels[intent] || "Done.");
+        setActionMsg(labels[intent] || t("done", "Done."));
         setSub(function (prev) {
           return Object.assign({}, prev, { status: norm(data.status) });
         });
       })
       .catch(function (err) {
         setLoadingAct(null);
-        setActionMsg("Failed: " + (err && err.message ? err.message : "unknown error"));
+        setActionMsg(t("failed_prefix", "Failed: ") + (err && err.message ? err.message : "unknown error"));
       });
   }
 
   // ── Loading ────────────────────────────────────────────────────
-  if (getState === "loading") {
+  if (!localeReady || getState === "loading") {
     return (
-      <s-page heading="Subscription Details">
+      <s-page heading={t("subscription_details", "Subscription Details")}>
         <s-section>
           <s-stack block-align="center" direction="inline" gap="base">
             <s-spinner />
-            <s-paragraph>Loading subscription…</s-paragraph>
+            <s-paragraph>{t("loading_subscription", "Loading subscription…")}</s-paragraph>
           </s-stack>
         </s-section>
       </s-page>
@@ -313,10 +393,10 @@ function SubscriptionDetailPage() {
   // ── Error ──────────────────────────────────────────────────────
   if (getState === "error") {
     return (
-      <s-page heading="Subscription Details">
+      <s-page heading={t("subscription_details", "Subscription Details")}>
         <s-section>
           <s-banner tone="critical">
-            <s-paragraph>{getMsg || "Something went wrong."}</s-paragraph>
+            <s-paragraph>{getMsg || t("something_went_wrong", "Something went wrong.")}</s-paragraph>
           </s-banner>
         </s-section>
       </s-page>
@@ -326,14 +406,14 @@ function SubscriptionDetailPage() {
   // ── Not Found ──────────────────────────────────────────────────
   if (getState === "notfound" || !getSub) {
     return (
-      <s-page heading="Subscription Details">
+      <s-page heading={t("subscription_details", "Subscription Details")}>
         <s-section>
           <s-banner tone="warning">
-            <s-paragraph>Subscription not found.</s-paragraph>
+            <s-paragraph>{t("subscription_not_found", "Subscription not found.")}</s-paragraph>
           </s-banner>
           <s-box padding-block-start="base">
             <s-button variant="secondary" to="/pages/subscriptions">
-              ← Back to Subscriptions
+              {"← " + t("back_to_subscriptions", "Back to Subscriptions")}
             </s-button>
           </s-box>
         </s-section>
@@ -347,7 +427,7 @@ function SubscriptionDetailPage() {
 
   // ─── Render ──────────────────────────────────────────────────
   return (
-    <s-page heading="Subscription Details">
+    <s-page heading={t("subscription_details", "Subscription Details")}>
 
       {/* ── Back link ────────────────────────────────────────── */}
       <s-box padding-block-end="base">
@@ -359,26 +439,26 @@ function SubscriptionDetailPage() {
             );
           }}
         >
-          ← All Subscriptions
+          {"← " + t("all_subscriptions", "All Subscriptions")}
         </s-button>
       </s-box>
 
       {/* ── 1. Overview Card ─────────────────────────────────── */}
-      <s-section heading="Overview">
+      <s-section heading={t("overview", "Overview")}>
         <s-box padding="base">
           <s-stack gap="base">
 
             {/* Status row */}
             <s-grid gridTemplateColumns="1fr 1fr" gap="base">
               <s-stack gap="extraTight">
-                <s-text subdued>Status</s-text>
+                <s-text subdued>{t("status_label", "Status")}</s-text>
                 <s-badge tone={statusTone(status)}>
                   {statusLabel(status)}
                 </s-badge>
               </s-stack>
 
               <s-stack gap="extraTight">
-                <s-text subdued>Subscription ID</s-text>
+                <s-text subdued>{t("subscription_id_label", "Subscription ID")}</s-text>
                 <s-text type="strong">#{sub.id}</s-text>
               </s-stack>
             </s-grid>
@@ -388,12 +468,12 @@ function SubscriptionDetailPage() {
             {/* Dates row */}
             <s-grid gridTemplateColumns="1fr 1fr" gap="base">
               <s-stack gap="extraTight">
-                <s-text subdued>Started</s-text>
+                <s-text subdued>{t("started_label", "Started")}</s-text>
                 <s-text>{fmtDate(sub.createdAt)}</s-text>
               </s-stack>
 
               <s-stack gap="extraTight">
-                <s-text subdued>Next Billing</s-text>
+                <s-text subdued>{t("next_billing_detail_label", "Next Billing")}</s-text>
                 <s-text type="strong">
                   {status === "ACTIVE" ? fmtDate(sub.next) : "—"}
                 </s-text>
@@ -405,7 +485,7 @@ function SubscriptionDetailPage() {
       </s-section>
 
       {/* ── 2. Items in this subscription ────────────────────── */}
-      <s-section heading="Items">
+      <s-section heading={t("items", "Items")}>
         <s-box padding="base">
           <s-stack gap="base">
             {sub.lines.map(function (line) {
@@ -430,9 +510,9 @@ function SubscriptionDetailPage() {
                     {/* Product info */}
                     <s-stack gap="extraTight">
                       <s-text type="strong">{line.title}</s-text>
-                      <s-paragraph>Qty: {line.qty}</s-paragraph>
+                      <s-paragraph>{t("qty_label", "Qty") + ": " + line.qty}</s-paragraph>
                       <s-paragraph>
-                        {line.currency} {(line.price * line.qty).toFixed(2)} / charge
+                        {line.currency} {(line.price * line.qty).toFixed(2)} {t("per_charge_suffix", "/ charge")}
                       </s-paragraph>
                     </s-stack>
                   </s-grid>
@@ -444,7 +524,7 @@ function SubscriptionDetailPage() {
 
             {/* Total */}
             <s-grid gridTemplateColumns="1fr auto" alignItems="center">
-              <s-text type="strong">Total per billing cycle</s-text>
+              <s-text type="strong">{t("total_per_billing_cycle", "Total per billing cycle")}</s-text>
               <s-text type="strong">
                 {sub.currency} {sub.total.toFixed(2)}
               </s-text>
@@ -454,12 +534,12 @@ function SubscriptionDetailPage() {
       </s-section>
 
       {/* ── 3. Billing History ───────────────────────────────── */}
-      <s-section heading="Payment History">
+      <s-section heading={t("payment_history", "Payment History")}>
         <s-box padding="base">
           {getAttempts.length === 0
             ? (
               <s-banner tone="info">
-                <s-paragraph>No payment records found yet.</s-paragraph>
+                <s-paragraph>{t("no_payment_attempts", "No payment attempts recorded yet.")}</s-paragraph>
               </s-banner>
             )
             : (
@@ -481,7 +561,7 @@ function SubscriptionDetailPage() {
       {/* ── 4. Actions ───────────────────────────────────────── */}
       {!isCancelled
         ? (
-          <s-section heading="Manage Subscription">
+          <s-section heading={t("manage_subscription", "Manage Subscription")}>
             <s-box padding="base">
               <s-stack gap="base">
 
@@ -501,7 +581,7 @@ function SubscriptionDetailPage() {
                   ? (
                     <s-banner tone="warning">
                       <s-paragraph>
-                        Your subscription is paused. No charges will be made until you resume it.
+                        {t("paused_notice", "Your subscription is paused. No charges will be made until you resume it.")}
                       </s-paragraph>
                     </s-banner>
                   ) : null
@@ -518,7 +598,7 @@ function SubscriptionDetailPage() {
                         disabled={getLoadingAct !== null}
                         onClick={function () { doAction("pause"); }}
                       >
-                        Pause Subscription
+                        {t("pause_subscription", "Pause Subscription")}
                       </s-button>
                     ) : null
                   }
@@ -533,7 +613,7 @@ function SubscriptionDetailPage() {
                         disabled={getLoadingAct !== null}
                         onClick={function () { doAction("resume"); }}
                       >
-                        Resume Subscription
+                        {t("resume_subscription", "Resume Subscription")}
                       </s-button>
                     ) : null
                   }
@@ -552,19 +632,18 @@ function SubscriptionDetailPage() {
 
                 {/* Cancel warning disclaimer */}
                 <s-text subdued>
-                  Cancelling your subscription will stop all future charges. This action cannot be undone.
+                  {t("cancel_disclaimer", "Cancelling your subscription will stop all future charges. This action cannot be undone.")}
                 </s-text>
 
               </s-stack>
             </s-box>
           </s-section>
         ) : (
-          <s-section heading="Subscription Status">
+          <s-section heading={t("subscription_status_heading", "Subscription Status")}>
             <s-box padding="base">
               <s-banner tone="info">
                 <s-paragraph>
-                  This subscription has been {statusLabel(status).toLowerCase()}.
-                  No further charges will be made.
+                  {t("subscription_has_been", "This subscription has been")} {statusLabel(status).toLowerCase()}. {t("no_further_charges", "No further charges will be made.")}
                 </s-paragraph>
               </s-banner>
             </s-box>

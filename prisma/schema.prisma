@@ -78,6 +78,7 @@ model BillingAttempt {
 model AppSettings {
   id                    String   @id @default(cuid())
   shop                  String   @unique          // one settings row per shop
+  defaultLocale         String   @default("en")   // language selected in admin for storefront/customer UI
 
   // ── Notifications ──────────────────────────────────────────
   notifyOnBillingFailure  Boolean  @default(true)

@@ -65,11 +65,12 @@ type PlanFormValues = {
 type ShopTier = "free" | "basic" | "pro" | "advanced";
 
 // ─── Plan tier limits ─────────────────────────────────────────
+// NOTE: -1 means unlimited. We avoid Infinity because JSON.stringify(Infinity) === "null"
 const PLAN_LIMITS: Record<ShopTier, number> = {
   free: 1,
-  basic: 2,
-  pro: 3,
-  advanced: Infinity,
+  basic: 3,
+  pro: 5,
+  advanced: -1, // -1 = unlimited
 };
 
 const PLAN_LABELS: Record<ShopTier, string> = {
@@ -85,6 +86,10 @@ function getPlanLimit(tier: string): number {
 
 function getPlanLabel(tier: string): string {
   return PLAN_LABELS[tier as ShopTier] ?? "Free";
+}
+
+function isUnlimitedLimit(limit: number): boolean {
+  return limit === -1;
 }
 
 // ─── Design tokens ───────────────────────────────────────────
@@ -210,7 +215,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     where: { shop: session.shop },
   });
   const tier = (shopPlan?.plan ?? "free") as ShopTier;
-  const planLimit = getPlanLimit(tier);
+  const planLimit = getPlanLimit(tier); // -1 means unlimited
 
   const localGroups = await prisma.sellingPlanGroup.findMany({
     where: { shop: session.shop },
@@ -252,7 +257,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     }),
   );
 
-  // ── Fetch all store products for the picker (server-side, authenticated) ──
+  // ── Fetch all store products for the picker ──
   let allProducts: PickerProduct[] = [];
   try {
     const productsRes = await admin.graphql(
@@ -284,7 +289,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   return json({
     planGroups: enriched as PlanGroup[],
     shopTier: tier,
-    planLimit,
+    planLimit, // -1 = unlimited (safe to JSON serialize)
     planLabel: getPlanLabel(tier),
     allProducts,
   });
@@ -303,21 +308,23 @@ export async function action({ request }: ActionFunctionArgs) {
     });
     const tier = shopPlan?.plan ?? "free";
     const limit = getPlanLimit(tier);
-    const currentCount = await prisma.sellingPlanGroup.count({
-      where: { shop: session.shop },
-    });
+    const unlimited = isUnlimitedLimit(limit);
 
-    if (currentCount >= limit) {
-      const limitLabel = limit === Infinity ? "unlimited" : `${limit}`;
-      return json(
-        {
-          ok: false,
-          error: `Your ${getPlanLabel(tier)} plan allows up to ${limitLabel} selling plan${limit === 1 ? "" : "s"}. Upgrade to create more.`,
-          intent: "create",
-          limitReached: true,
-        },
-        { status: 403 },
-      );
+    if (!unlimited) {
+      const currentCount = await prisma.sellingPlanGroup.count({
+        where: { shop: session.shop },
+      });
+      if (currentCount >= limit) {
+        return json(
+          {
+            ok: false,
+            error: `Your ${getPlanLabel(tier)} plan allows up to ${limit} selling plan${limit === 1 ? "" : "s"}. Upgrade to create more.`,
+            intent: "create",
+            limitReached: true,
+          },
+          { status: 403 },
+        );
+      }
     }
 
     const parsed = parsePlanForm(formData);
@@ -633,10 +640,10 @@ function PlanUsageBar({
   tier: string;
   planLabel: string;
 }) {
-  const isUnlimited = limit === Infinity;
-  const pct = isUnlimited ? 0 : Math.min((used / limit) * 100, 100);
-  const isFull = !isUnlimited && used >= limit;
-  const isNearFull = !isUnlimited && used >= limit - 1 && used < limit;
+  const unlimited = isUnlimitedLimit(limit);
+  const pct = unlimited ? 0 : Math.min((used / limit) * 100, 100);
+  const isFull = !unlimited && used >= limit;
+  const isNearFull = !unlimited && used >= limit - 1 && used < limit;
 
   const barColor = isFull ? "#C94040" : isNearFull ? T.amberDot : T.purple;
   const bgColor = isFull ? T.redBg : isNearFull ? T.amberBg : T.purpleBg;
@@ -720,12 +727,12 @@ function PlanUsageBar({
           <Text as="span" variant="bodySm" tone="subdued">
             <span style={{ color: labelColor, fontWeight: 600 }}>{used}</span>
             <span style={{ color: labelColor, opacity: 0.6 }}>
-              {" "}/ {isUnlimited ? "∞" : limit}
+              {" "}/ {unlimited ? "∞" : limit}
             </span>
           </Text>
         </div>
 
-        {!isUnlimited && (
+        {!unlimited && (
           <div
             style={{
               height: "5px",
@@ -751,7 +758,7 @@ function PlanUsageBar({
         )}
 
         <div style={{ marginTop: "5px" }}>
-          {isUnlimited ? (
+          {unlimited ? (
             <Text as="span" variant="bodySm" tone="subdued">
               <span style={{ color: "#1A6B45", fontSize: "12px" }}>
                 Unlimited plans on Advanced
@@ -1213,8 +1220,8 @@ export default function Plans() {
   const isSavingPlan =
     isSubmitting && (activeIntent === "create" || activeIntent === "update");
 
-  const isUnlimited = planLimit === Infinity;
-  const atLimit = !isUnlimited && planGroups.length >= planLimit;
+  const unlimited = isUnlimitedLimit(planLimit);
+  const atLimit = !unlimited && planGroups.length >= planLimit;
 
   // ── Plan editor modal state ──
   const [editorOpen, setEditorOpen] = useState(false);
@@ -1235,7 +1242,6 @@ export default function Plans() {
   );
   const [isAssigning, setIsAssigning] = useState(false);
 
-  // Client-side filter — no extra fetch needed, products loaded in loader
   const filteredProducts = allProducts.filter((p: PickerProduct) =>
     p.title.toLowerCase().includes(productSearch.toLowerCase()),
   );
@@ -1436,7 +1442,7 @@ export default function Plans() {
             planLabel={planLabel}
           />
 
-          {/* ── Limit-reached upgrade banner ── */}
+          {/* ── Limit-reached upgrade banner — only shown for non-unlimited plans ── */}
           {atLimit && (
             <div
               style={{
@@ -1470,8 +1476,7 @@ export default function Plans() {
               <div style={{ flex: 1 }}>
                 <Text as="p" variant="bodySm" fontWeight="semibold">
                   <span style={{ color: T.redFg }}>
-                    Plan limit reached ({planGroups.length}/
-                    {isUnlimited ? "∞" : planLimit})
+                    Plan limit reached ({planGroups.length}/{planLimit})
                   </span>
                 </Text>
                 <Text as="p" variant="bodySm">
@@ -1503,7 +1508,7 @@ export default function Plans() {
             </div>
           )}
 
-          {/* Error banner */}
+          {/* Error banner — only for non-limit errors */}
           {actionData &&
             "ok" in actionData &&
             actionData.error &&

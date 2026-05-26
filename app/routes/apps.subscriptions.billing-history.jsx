@@ -4,6 +4,7 @@ import { json } from "@remix-run/node";
 import prisma from "../db.server";
 import { unauthenticated } from "../shopify.server";
 import { syncSubscriptionContractById } from "../shopify/subscriptionContracts.server";
+import { normalizeShop } from "../models/translations.server";
 
 function corsHeaders() {
   return {
@@ -19,9 +20,9 @@ export async function loader({ request }) {
     return new Response(null, { status: 204, headers: corsHeaders() });
   }
 
-  const url        = new URL(request.url);
+  const url = new URL(request.url);
   const contractId = url.searchParams.get("contractId");
-  const shop       = url.searchParams.get("shop");
+  const shop = normalizeShop(url.searchParams.get("shop"));
 
   if (!contractId || !shop) {
     return json({ error: "Missing contractId or shop" }, { status: 400, headers: corsHeaders() });
